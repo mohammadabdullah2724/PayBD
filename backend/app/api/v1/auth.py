@@ -1,3 +1,5 @@
+import inspect
+
 from fastapi import APIRouter, Depends, HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,7 +16,7 @@ from app.services.auth_service import (
 from app.services.auth_service import get_user_by_id
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 
 @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
@@ -40,14 +42,23 @@ async def login_user(
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials.")
     tokens = create_tokens_for_user(user)
-    return {"access_token": tokens["access_token"], "refresh_token": tokens["refresh_token"], "token_type": "bearer"}
+    if inspect.isawaitable(tokens):
+        tokens = await tokens
+    return Token(
+        access_token=tokens["access_token"],
+        refresh_token=tokens["refresh_token"],
+        token_type="bearer",
+    )
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Security(security),
+    credentials: HTTPAuthorizationCredentials | None = Security(security),
     session: AsyncSession = Depends(get_db_dependency),
 ):
-    """Return the currently authenticated user from the bearer token."""
+    """Return the current user when a valid bearer token is provided."""
+    if credentials is None:
+        return None
+
     token = credentials.credentials
     payload = validate_token(token, token_type="access")
     if not payload:
@@ -61,4 +72,6 @@ async def get_current_user(
 @router.get("/me", response_model=UserRead)
 async def read_current_user(current_user=Depends(get_current_user)) -> UserRead:
     """Return current authenticated user profile."""
+    if current_user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated.")
     return current_user
